@@ -1,1 +1,563 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("POSTGRES_PRISMA_URL")
+  directUrl = env("POSTGRES_URL_NON_POOLING")
+}
+
+// ─── TENANCY ─────────────────────────────────────────────────
+
+model Workspace {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  subdomain String   @unique
+  logoUrl   String?
+  plan      Plan     @default(STARTER)
+  currency  String   @default("EUR")
+  timezone  String   @default("Europe/Amsterdam")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members           WorkspaceMember[]
+  contacts          Contact[]
+  accounts          Account[]
+  opportunities     Opportunity[]
+  activities        Activity[]
+  products          Product[]
+  pipelines         Pipeline[]
+  tags              Tag[]
+  customFields      CustomField[]
+  emailIntegrations EmailIntegration[]
+  webhooks          Webhook[]
+  auditLogs         AuditLog[]
+  invitations       Invitation[]
+
+  @@index([subdomain])
+}
+
+enum Plan {
+  STARTER
+  PRO
+  ENTERPRISE
+}
+
+model WorkspaceMember {
+  id          String    @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        Role      @default(MEMBER)
+  joinedAt    DateTime  @default(now())
+
+  workspace             Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ownedOpportunities    Opportunity[] @relation("OpportunityOwner")
+  assignedActivities    Activity[]    @relation("ActivityAssignee")
+
+  @@unique([workspaceId, userId])
+  @@index([workspaceId])
+  @@index([userId])
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  MANAGER
+  MEMBER
+  VIEWER
+}
+
+model Invitation {
+  id          String    @id @default(cuid())
+  workspaceId String
+  email       String
+  role        Role      @default(MEMBER)
+  token       String    @unique @default(cuid())
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  invitedById String
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([workspaceId])
+}
+
+// ─── AUTH (NextAuth v5 / Auth.js) ────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts      Account_  []
+  sessions      Session[]
+  workspaces    WorkspaceMember[]
+}
+
+model Account_ {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user         User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ─── CRM CORE ────────────────────────────────────────────────
+
+model Account {
+  id           String      @id @default(cuid())
+  workspaceId  String
+  name         String
+  domain       String?
+  industry     String?
+  size         CompanySize?
+  website      String?
+  phone        String?
+  address      String?
+  city         String?
+  country      String?
+  description  String?     @db.Text
+  logoUrl      String?
+  linkedinUrl  String?
+  annualRevenue Float?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  workspace     Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contacts      Contact[]
+  opportunities Opportunity[]
+  activities    Activity[]
+  tags          TagOnAccount[]
+  customValues  CustomFieldValue[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, name])
+}
+
+enum CompanySize {
+  MICRO
+  SMALL
+  MEDIUM
+  LARGE
+  ENTERPRISE
+}
+
+model Contact {
+  id          String        @id @default(cuid())
+  workspaceId String
+  accountId   String?
+  firstName   String
+  lastName    String
+  email       String?
+  phone       String?
+  mobile      String?
+  jobTitle    String?
+  department  String?
+  linkedinUrl String?
+  avatarUrl   String?
+  notes       String?       @db.Text
+  status      ContactStatus @default(ACTIVE)
+  leadSource  String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  workspace     Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  account       Account?               @relation(fields: [accountId], references: [id])
+  opportunities ContactOnOpportunity[]
+  activities    Activity[]
+  tags          TagOnContact[]
+  customValues  CustomFieldValue[]
+  emailThreads  EmailThread[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, email])
+  @@index([accountId])
+}
+
+enum ContactStatus {
+  ACTIVE
+  INACTIVE
+  LEAD
+  CUSTOMER
+  CHURNED
+}
+
+// ─── PIPELINE ─────────────────────────────────────────────────
+
+model Pipeline {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  isDefault   Boolean  @default(false)
+  currency    String   @default("EUR")
+  createdAt   DateTime @default(now())
+
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  stages        Stage[]
+  opportunities Opportunity[]
+
+  @@index([workspaceId])
+}
+
+model Stage {
+  id          String   @id @default(cuid())
+  pipelineId  String
+  name        String
+  position    Int
+  probability Int      @default(0)
+  color       String   @default("#6b7280")
+  isWon       Boolean  @default(false)
+  isLost      Boolean  @default(false)
+  rottenDays  Int?
+
+  pipeline      Pipeline      @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  opportunities Opportunity[]
+  stageHistory  StageHistory[]
+
+  @@index([pipelineId])
+}
+
+model Opportunity {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  pipelineId        String
+  stageId           String
+  accountId         String?
+  ownerId           String
+  name              String
+  value             Float     @default(0)
+  currency          String    @default("EUR")
+  probability       Int?
+  expectedCloseDate DateTime?
+  actualCloseDate   DateTime?
+  lostReason        String?
+  source            String?
+  description       String?   @db.Text
+  priority          Priority  @default(MEDIUM)
+  status            OppStatus @default(OPEN)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  workspace      Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  pipeline       Pipeline               @relation(fields: [pipelineId], references: [id])
+  stage          Stage                  @relation(fields: [stageId], references: [id])
+  account        Account?               @relation(fields: [accountId], references: [id])
+  owner          WorkspaceMember        @relation("OpportunityOwner", fields: [ownerId], references: [id])
+  contacts       ContactOnOpportunity[]
+  products       ProductOnOpportunity[]
+  activities     Activity[]
+  tags           TagOnOpportunity[]
+  customValues   CustomFieldValue[]
+  stageHistory   StageHistory[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, stageId])
+  @@index([ownerId])
+  @@index([expectedCloseDate])
+}
+
+enum Priority  { LOW MEDIUM HIGH CRITICAL }
+enum OppStatus { OPEN WON LOST ON_HOLD }
+
+model StageHistory {
+  id            String   @id @default(cuid())
+  opportunityId String
+  fromStageId   String?
+  toStageId     String
+  movedAt       DateTime @default(now())
+  movedById     String?
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  toStage     Stage       @relation(fields: [toStageId], references: [id])
+
+  @@index([opportunityId])
+}
+
+model ContactOnOpportunity {
+  opportunityId String
+  contactId     String
+  role          String?
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  contact     Contact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@id([opportunityId, contactId])
+}
+
+// ─── PRODUCTS ────────────────────────────────────────────────
+
+model Product {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  sku         String?
+  description String?
+  unitPrice   Float
+  currency    String   @default("EUR")
+  category    String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  workspace     Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  opportunities ProductOnOpportunity[]
+
+  @@index([workspaceId])
+}
+
+model ProductOnOpportunity {
+  opportunityId String
+  productId     String
+  quantity      Int   @default(1)
+  unitPrice     Float
+  discount      Float @default(0)
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  product     Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@id([opportunityId, productId])
+}
+
+// ─── ACTIVITIES ───────────────────────────────────────────────
+
+model Activity {
+  id            String       @id @default(cuid())
+  workspaceId   String
+  type          ActivityType
+  title         String
+  body          String?      @db.Text
+  outcome       String?
+  scheduledAt   DateTime?
+  completedAt   DateTime?
+  duration      Int?
+  assigneeId    String?
+  createdById   String
+  opportunityId String?
+  contactId     String?
+  accountId     String?
+  emailThreadId String?
+  isAutomated   Boolean      @default(false)
+  metadata      Json?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  opportunity Opportunity?     @relation(fields: [opportunityId], references: [id])
+  contact     Contact?         @relation(fields: [contactId], references: [id])
+  account     Account?         @relation(fields: [accountId], references: [id])
+  assignee    WorkspaceMember? @relation("ActivityAssignee", fields: [assigneeId], references: [id])
+  emailThread EmailThread?     @relation(fields: [emailThreadId], references: [id])
+
+  @@index([workspaceId])
+  @@index([opportunityId])
+  @@index([contactId])
+  @@index([workspaceId, type])
+  @@index([scheduledAt])
+}
+
+enum ActivityType {
+  NOTE
+  CALL
+  EMAIL
+  MEETING
+  TASK
+  DEMO
+  PROPOSAL_SENT
+  CONTRACT_SENT
+  STAGE_CHANGE
+  SYSTEM
+}
+
+// ─── EMAIL INTEGRATION ────────────────────────────────────────
+
+model EmailIntegration {
+  id            String        @id @default(cuid())
+  workspaceId   String
+  userId        String
+  provider      EmailProvider
+  email         String
+  accessToken   String        @db.Text
+  refreshToken  String?       @db.Text
+  expiresAt     DateTime?
+  historyId     String?
+  deltaLink     String?       @db.Text
+  syncFromDate  DateTime      @default(now())
+  lastSyncAt    DateTime?
+  isActive      Boolean       @default(true)
+  createdAt     DateTime      @default(now())
+
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  threads   EmailThread[]
+
+  @@unique([workspaceId, userId, provider])
+  @@index([workspaceId])
+}
+
+enum EmailProvider { GOOGLE MICROSOFT }
+
+model EmailThread {
+  id                 String   @id @default(cuid())
+  workspaceId        String
+  emailIntegrationId String?
+  contactId          String?
+  externalThreadId   String
+  subject            String
+  lastMessageAt      DateTime
+  messageCount       Int      @default(1)
+  isInbound          Boolean  @default(true)
+  snippet            String?
+  createdAt          DateTime @default(now())
+
+  integration EmailIntegration? @relation(fields: [emailIntegrationId], references: [id])
+  contact     Contact?          @relation(fields: [contactId], references: [id])
+  activities  Activity[]
+  messages    EmailMessage[]
+
+  @@index([contactId])
+  @@index([workspaceId])
+  @@index([externalThreadId])
+}
+
+model EmailMessage {
+  id        String   @id @default(cuid())
+  threadId  String
+  messageId String
+  from      String
+  to        String[]
+  cc        String[]
+  subject   String
+  body      String   @db.Text
+  bodyHtml  String?  @db.Text
+  sentAt    DateTime
+  isRead    Boolean  @default(false)
+
+  thread EmailThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@unique([threadId, messageId])
+  @@index([threadId])
+}
+
+// ─── TAGS & CUSTOM FIELDS ────────────────────────────────────
+
+model Tag {
+  id          String @id @default(cuid())
+  workspaceId String
+  name        String
+  color       String @default("#6b7280")
+
+  workspace     Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contacts      TagOnContact[]
+  accounts      TagOnAccount[]
+  opportunities TagOnOpportunity[]
+
+  @@unique([workspaceId, name])
+}
+
+model TagOnContact     { tagId String; contactId     String; tag Tag @relation(fields: [tagId], references: [id], onDelete: Cascade); contact     Contact     @relation(fields: [contactId],     references: [id], onDelete: Cascade); @@id([tagId, contactId]) }
+model TagOnAccount     { tagId String; accountId     String; tag Tag @relation(fields: [tagId], references: [id], onDelete: Cascade); account     Account     @relation(fields: [accountId],     references: [id], onDelete: Cascade); @@id([tagId, accountId]) }
+model TagOnOpportunity { tagId String; opportunityId String; tag Tag @relation(fields: [tagId], references: [id], onDelete: Cascade); opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade); @@id([tagId, opportunityId]) }
+
+model CustomField {
+  id          String            @id @default(cuid())
+  workspaceId String
+  entity      CustomFieldEntity
+  name        String
+  key         String
+  type        CustomFieldType
+  options     String[]
+  required    Boolean           @default(false)
+  position    Int               @default(0)
+
+  workspace Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  values    CustomFieldValue[]
+
+  @@unique([workspaceId, entity, key])
+}
+
+enum CustomFieldEntity { CONTACT ACCOUNT OPPORTUNITY }
+enum CustomFieldType   { TEXT NUMBER DATE BOOLEAN SELECT MULTI_SELECT URL }
+
+model CustomFieldValue {
+  id            String  @id @default(cuid())
+  fieldId       String
+  value         String  @db.Text
+  contactId     String?
+  accountId     String?
+  opportunityId String?
+
+  field       CustomField  @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+  contact     Contact?     @relation(fields: [contactId],     references: [id], onDelete: Cascade)
+  account     Account?     @relation(fields: [accountId],     references: [id], onDelete: Cascade)
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+}
+
+// ─── AUTOMATION ───────────────────────────────────────────────
+
+model Webhook {
+  id          String   @id @default(cuid())
+  workspaceId String
+  url         String
+  events      String[]
+  secret      String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+// ─── AUDIT ────────────────────────────────────────────────────
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  workspaceId String
+  userId      String
+  action      String
+  entity      String
+  entityId    String
+  before      Json?
+  after       Json?
+  ip          String?
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, entity, entityId])
+  @@index([workspaceId, createdAt])
+}
 
