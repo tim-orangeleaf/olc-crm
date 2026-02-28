@@ -1,20 +1,21 @@
-import { z } from 'zod';
-import { TeamDataWithMembers, User } from '@/lib/db/schema';
-import { getTeamForUser, getUser } from '@/lib/db/queries';
-import { redirect } from 'next/navigation';
+import { z } from "zod";
+import { auth } from "@/auth";
+import { prisma } from "@/lib/prisma";
+import { redirect } from "next/navigation";
+import type { Workspace } from "@prisma/client";
 
 export type ActionState = {
   error?: string;
   success?: string;
-  [key: string]: any; // This allows for additional properties
+  [key: string]: unknown;
 };
 
-type ValidatedActionFunction<S extends z.ZodType<any, any>, T> = (
+type ValidatedActionFunction<S extends z.ZodType, T> = (
   data: z.infer<S>,
   formData: FormData
 ) => Promise<T>;
 
-export function validatedAction<S extends z.ZodType<any, any>, T>(
+export function validatedAction<S extends z.ZodType, T>(
   schema: S,
   action: ValidatedActionFunction<S, T>
 ) {
@@ -23,53 +24,32 @@ export function validatedAction<S extends z.ZodType<any, any>, T>(
     if (!result.success) {
       return { error: result.error.errors[0].message };
     }
-
     return action(result.data, formData);
   };
 }
 
-type ValidatedActionWithUserFunction<S extends z.ZodType<any, any>, T> = (
-  data: z.infer<S>,
+type ActionWithWorkspaceFunction<T> = (
   formData: FormData,
-  user: User
+  workspace: Workspace
 ) => Promise<T>;
 
-export function validatedActionWithUser<S extends z.ZodType<any, any>, T>(
-  schema: S,
-  action: ValidatedActionWithUserFunction<S, T>
-) {
-  return async (prevState: ActionState, formData: FormData) => {
-    const user = await getUser();
-    if (!user) {
-      throw new Error('User is not authenticated');
-    }
-
-    const result = schema.safeParse(Object.fromEntries(formData));
-    if (!result.success) {
-      return { error: result.error.errors[0].message };
-    }
-
-    return action(result.data, formData, user);
-  };
-}
-
-type ActionWithTeamFunction<T> = (
-  formData: FormData,
-  team: TeamDataWithMembers
-) => Promise<T>;
-
-export function withTeam<T>(action: ActionWithTeamFunction<T>) {
+export function withWorkspace<T>(action: ActionWithWorkspaceFunction<T>) {
   return async (formData: FormData): Promise<T> => {
-    const user = await getUser();
-    if (!user) {
-      redirect('/sign-in');
+    const session = await auth();
+    if (!session?.user?.id) {
+      redirect("/auth/login");
     }
 
-    const team = await getTeamForUser();
-    if (!team) {
-      throw new Error('Team not found');
+    // Use the first workspace the user belongs to
+    const membership = await prisma.workspaceMember.findFirst({
+      where: { userId: session.user.id },
+      include: { workspace: true },
+    });
+
+    if (!membership) {
+      throw new Error("Workspace not found");
     }
 
-    return action(formData, team);
+    return action(formData, membership.workspace);
   };
 }

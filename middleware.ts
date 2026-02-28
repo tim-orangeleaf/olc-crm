@@ -1,49 +1,41 @@
-import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
-import { signToken, verifyToken } from '@/lib/auth/session';
+// Middleware — Auth.js v5 session guard + subdomain extraction
+// See spec §5.7
 
-const protectedRoutes = '/dashboard';
+import { auth } from "@/auth";
+import { NextResponse } from "next/server";
 
-export async function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
-  const sessionCookie = request.cookies.get('session');
-  const isProtectedRoute = pathname.startsWith(protectedRoutes);
+export default auth((req) => {
+  const url = req.nextUrl;
+  const host = req.headers.get("host") ?? "";
 
-  if (isProtectedRoute && !sessionCookie) {
-    return NextResponse.redirect(new URL('/sign-in', request.url));
+  // Subdomain extraction
+  const isLocalhost =
+    host.includes("localhost") || host.includes("127.0.0.1");
+  const subdomain = isLocalhost ? null : host.split(".")[0];
+
+  // Public routes — always allow
+  const isPublic =
+    url.pathname.startsWith("/auth/") ||
+    url.pathname.startsWith("/api/auth/") ||
+    url.pathname.startsWith("/api/stripe/") ||
+    url.pathname.startsWith("/api/cron/") ||
+    url.pathname === "/favicon.ico";
+
+  if (isPublic) return NextResponse.next();
+
+  // Auth guard
+  if (!req.auth?.user?.id) {
+    const loginUrl = new URL("/auth/login", req.url);
+    loginUrl.searchParams.set("callbackUrl", url.pathname);
+    return NextResponse.redirect(loginUrl);
   }
 
-  let res = NextResponse.next();
-
-  if (sessionCookie && request.method === 'GET') {
-    try {
-      const parsed = await verifyToken(sessionCookie.value);
-      const expiresInOneDay = new Date(Date.now() + 24 * 60 * 60 * 1000);
-
-      res.cookies.set({
-        name: 'session',
-        value: await signToken({
-          ...parsed,
-          expires: expiresInOneDay.toISOString()
-        }),
-        httpOnly: true,
-        secure: true,
-        sameSite: 'lax',
-        expires: expiresInOneDay
-      });
-    } catch (error) {
-      console.error('Error updating session:', error);
-      res.cookies.delete('session');
-      if (isProtectedRoute) {
-        return NextResponse.redirect(new URL('/sign-in', request.url));
-      }
-    }
-  }
-
+  // Inject workspace subdomain header
+  const res = NextResponse.next();
+  if (subdomain) res.headers.set("x-workspace-subdomain", subdomain);
   return res;
-}
+});
 
 export const config = {
-  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)'],
-  runtime: 'nodejs'
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };
